@@ -2,13 +2,18 @@ require 'crawler_rocks'
 require 'iconv'
 require 'pry'
 
+require 'book_toolkit'
+
 require 'thread'
 require 'thwait'
 
 class OuyaBookCrawler
   include CrawlerRocks::DSL
 
-  def initialize
+  def initialize update_progress: nil, after_each: nil
+    @update_progress_proc = update_progress
+    @after_each_proc = after_each
+
     @index_url = "http://www.eurasia.com.tw/product/books.asp"
     @query_url = "http://www.eurasia.com.tw/product/books_sub.asp"
     @base_url = "http://www.eurasia.com.tw/product/"
@@ -60,8 +65,8 @@ class OuyaBookCrawler
             rel_url = datas[0] && !datas[0].css('a').empty? && datas[0].css('a')[0][:href]
             url = @base_url + rel_url
 
-            price = datas[5] && datas[5].text.to_i
-            price = nil if price == 0
+            original_price = datas[5] && datas[5].text.to_i
+            original_price = nil if original_price == 0
 
             r = RestClient.get url
             detail_doc = Nokogiri::HTML(@ic.iconv r)
@@ -72,16 +77,29 @@ class OuyaBookCrawler
               tr_text.match(/版　次\u{ff1a}\s(?<edi>\d+?)\s/){|m| publisher ||= m[:edi].to_i}
             end
 
-            @books << {
+            isbn = nil; invalid_isbn = nil;
+            begin
+              isbn = datas[2] && BookToolkit.to_isbn13(datas[2].text.strip)
+            rescue Exception => e
+              invalid_isbn = datas[2] && datas[2].text.strip
+            end
+
+            book = {
               name: datas[3] && datas[3].text.strip.gsub(/\w+/, &:capitalize),
               author: datas[4] && datas[4].text.strip.capitalize,
-              isbn: datas[2] && datas[2].text.strip,
+              isbn: isbn,
+              invalid_isbn: invalid_isbn,
               internal_code: datas[0] && datas[0].text.strip,
               publisher: publisher,
               edition: edition,
               url: url,
-              price: price,
+              original_price: original_price,
+              known_supplier: 'ouya'
             }
+
+            @after_each_proc.call(book: book) if @after_each_proc
+
+            @books << book
           end
         end # each row do
         ThreadsWait.all_waits(*@detail_threads)
@@ -93,5 +111,5 @@ class OuyaBookCrawler
   end # end books
 end
 
-cc = OuyaBookCrawler.new
-File.write('ouya_books.json', JSON.pretty_generate(cc.books))
+# cc = OuyaBookCrawler.new
+# File.write('ouya_books.json', JSON.pretty_generate(cc.books))
